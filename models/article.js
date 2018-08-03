@@ -1,31 +1,31 @@
-
-
-function articleModel (mongoose) {
-    const articleSchema = mongoose.Schema({
-        title:String,
-        content:String,
-        cataId:mongoose.Schema.Types.ObjectId,
-        author:mongoose.Schema.Types.ObjectId,
-        created_at:{type:Date,default:Date.now},
-        updated_at:{type:Date,default:Date.now}
-    })
+const baseModel = require('./baseModel')
+class articleMod extends baseModel{
+    constructor (pool){
+        super(pool)
+        this.table="articleinfos"
+    }
 
     // 添加文章
-    articleSchema.statics.addArticle = async function(ctx){
+    async addArticle(ctx){
+
         let {title,content,cataId,author} = ctx.request.body
+
         let answer = {
             error:1,
             message:'添加文章出错'
         }
-
-        let article = new this({title,content,cataId,author})
         try {
-            let res = await article.save();
-            if (res) {
+            let data = {
+                title,content,cataId,author
+            }
+
+            let res = await this.insert(data);
+            let id = res.insertId
+            if (id) {
               answer = {
                   error:0,
                   message:'添加成功',
-                  articleId:res['_id'],
+                  articleId:id,
                   qiuet:true
               }   
             }
@@ -39,41 +39,43 @@ function articleModel (mongoose) {
         return answer;
     }
 
-
     // 删除文章
-    articleSchema.statics.deleteArticle = async function (ctx){
+    async deleteArticle (ctx){
         let {articleId} = ctx.request.body
         let answer = {
             error:1,
             message:'删除失败'
         }
-        let result = await this.remove({_id:articleId})
-        if (result.ok==1){
-            result.n==0&&(answer={error:1,message:'该文章不存在'})
-            result.n==1&&(answer={error:0,message:'删除成功'})
-        }
+        let queryStr = `id=${articleId}`
+        let result = await this.delete({queryStr})
+    
+        result.affectedRows==0&&(answer={error:1,message:'该文章不存在'})
+        result.affectedRows>=1&&(answer={error:0,message:'删除成功'})
+      
         return answer;
     }
 
     // 移动分类
-    articleSchema.statics.classifyArticle = async function (ctx) {
+
+    async classifyArticle (ctx) {
         let {articleId,cataId} = ctx.request.body
         let answer = {
             error:1,
             message:'移动失败'
         }
         try {
-            let result = await this.findOne({_id:articleId}).update({cataId:cataId})
-            if (result.ok==1){
-                result.n==1&&(answer = {
+            let searchStr = `id=${articleId}`
+            let setStr = `cataId=${cataId}`
+            let result = await this.update({searchStr,setStr})
+                result.affectedRows>=1&&(answer = {
                     error:0,
                     message:'移动成功'
                 })
-                result.n==0&&(answer = {
+                result.affectedRows==0&&(answer = {
                     error:1,
                     message:'移动失败,该文章不存在'
                 })
-            }
+            
         }catch (err){
             answer = {
                 error:1,
@@ -83,31 +85,35 @@ function articleModel (mongoose) {
         return answer;
     }
 
-    // 更新文章  //标题  内容
-    articleSchema.statics.updateArticle = async function(ctx){
+    // 更新文章
+
+    async updateArticle(ctx){
         let {title,content,articleId} = ctx.request.body
         let answer = {
             error:1,
             message:'更新失败'
         }
-        let data = {}
+        let data = {isPublished:0}
         title&&(data.title=title)
         content&&(data.content=content)
-        data.updated_at = new Date()
+        
         try {
             
-            let result = await this.findOne({_id:articleId}).update(data)
-            if (result.ok==1){
-                result.n==1&&(answer={
+            let searchStr = `id=${articleId}`
+            let setStr = this.getSetStr(data)
+            
+            let result = await this.update({searchStr,setStr},1)
+            
+                result.affectedRows>=1&&(answer={
                     error:0,
                     message:'更新成功',
                     qiuet:true
                 })
-                result.n==0&&(answer={
+                result.affectedRows==0&&(answer={
                     error:1,
                     message:'更新失败,该文章不存在',
                 })
-            }
+            
         }catch(err){
             answer={
                 error:1,
@@ -120,7 +126,7 @@ function articleModel (mongoose) {
 
 
     // 获取文章列表
-    articleSchema.statics.getArticles = async function(ctx){
+    async getArticles(ctx){
         let cataId = ctx.captures[0]
         let answer = {
             error:1,
@@ -128,8 +134,10 @@ function articleModel (mongoose) {
             qiuet:true
         }
         try {
-            let articles = await this.find({cataId}).sort({created_at:-1})
-            let data = articles.map((article)=> {return {articleId:article._id,title:article.title}})
+            let queryStr = `cataId=${cataId}`
+            let sortStr = `create_at desc`
+            let articles = await this.find({queryStr,sortStr},1)
+            let data = articles.map((article)=> {return {articleId:article.id,title:article.title}})
             answer = {
                 error:0,
                 list:data,
@@ -146,9 +154,56 @@ function articleModel (mongoose) {
         return answer;
     }
 
-    let articleModel = mongoose.model('articleInfo',articleSchema)
-    return articleModel;
+
+    // 获取文章内容
+    async getArticleContent (ctx) {
+        let articleId = ctx.captures[0]
+        let queryStr = `id=${articleId}`
+        let result = await this.findOne({queryStr})
+        let answer = {
+            error:1,
+            message:'获取内容失败',
+            qiuet:true
+        }
+        if (result) {
+            answer = {
+                error:0,
+                content:result.content,
+                message:'获取内容成功'
+            }
+        }
+        return answer;
+    }
+
+
+    
+    async publishArticle (ctx){
+        let articleId = ctx.captures[0]
+        let answer = {
+            error:1,
+            message:'发布失败'
+        }
+        let setStr = `isPublished=1`
+        let searchStr = `id=${articleId}`
+        let result = await this.update({setStr,searchStr})
+        
+        result.affectedRows==0&&(answer={
+            error:1,
+            message:'发布失败,文章不存在'
+        })
+        result.affectedRows>=1&&(answer={
+            error:0,
+            message:'发布成功'
+        })
+            
+        return answer;
+    }
+
+
+
+
 
 }
 
-module.exports = articleModel;
+
+module.exports = articleMod;

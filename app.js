@@ -1,45 +1,58 @@
 const koa = require('koa');
+const fs = require('fs')
+const path = require('path')
 const app = new koa();
 const Router = require('koa-router')
 const router = new Router({
     prefix: '/api'
 });
-const bodyParser = require('koa-bodyparser')
+
 const md5 = require('./utils/md5')
 const session = require('koa-session')
 const sessionConfig = require('./config/session')
 const svgCaptcha = require('svg-captcha')
 const jwtObj = require('./utils/jwt')
+const koaBody = require('koa-body')
+const serve = require('koa-static')
+const parseTime = require('./utils/time')
 
 var userModel;
 var cataLogModel;
 var articleModel;
+var realArticleModel;
 
 
-
-var mongoose = require('mongoose')
-mongoose.connect('mongodb://localhost/blog')
-var dbc = mongoose.connection;
-
-dbc.on('error', () => {
-    console.log('数据库链接失败')
+//mysqlDB
+const mysql = require('mysql')
+const pool = mysql.createPool({
+    host:'127.0.0.1',
+    user:'root',
+    password:'root',
+    database:'blog'
 })
-dbc.on('open', () => {
-    console.log('数据库链接成功')
-    userModel = require('./models/userModel')(mongoose)
-    cataLogModel = require('./models/cataLog')(mongoose)
-    articleModel = require('./models/article')(mongoose)
-})
-dbc.on('disconnected', () => {
-    console.log('数据库断开链接')
-})
-
-
 
 
 app.keys = ['myblog']
+
 app.use(session(sessionConfig,app))
-app.use(bodyParser())
+
+app.use(koaBody({multipart:true}))
+const statics = serve(path.join(__dirname,'uploads'))
+
+app.use(async (ctx,next)=>{
+    
+    ctx.userModel = new (require('./models/userModel'))(pool)
+    ctx.cataLogModel = new (require('./models/cataLog'))(pool);
+    ctx.articleModel = new (require('./models/article'))(pool);
+    ctx.realArticleModel = new (require('./models/realArticle'))(pool);
+
+    cataLogModel = ctx.cataLogModel
+    articleModel = ctx.articleModel
+    userModel = ctx.userModel
+    realArticleModel = ctx.realArticleModel
+    await next();
+})
+
 app.use(async (ctx,next)=>{
      // 验证码
      
@@ -72,6 +85,7 @@ app.use(async (ctx,next)=>{
 })
 
 app.use(async (ctx,next)=>{
+    
     try {
         await next()
     } catch(err) {
@@ -124,7 +138,8 @@ router.post('/refresh',async (ctx,next)=>{
             return;
         }
         
-        let findUser = await userModel.findOne({'_id':data.uid})
+        let queryStr = `id=${data.uid}`
+        let findUser = await userModel.findOne({queryStr},1)
         if (findUser){
             ctx.body={
                 error:0,
@@ -149,7 +164,7 @@ router.post('/login',async (ctx,next)=>{
     
     let user = await userModel.login(ctx);
     if (user){
-        let token = jwtObj.createToken({uid:user['_id'].toString()})
+        let token = jwtObj.createToken({uid:user['id'].toString()})
         ctx.set('Authorization',token);
         let data = {nickname} = user;
         ctx.body={
@@ -163,11 +178,9 @@ router.post('/login',async (ctx,next)=>{
 router.post('/register',async (ctx,next)=>{
     const {body} = ctx.request
     body.password = md5(body.password)
-    body.created_at = Date.now()
-    body.code_outdate = Date.now()+(24*3600*1000)
+    body.code_outdate = parseTime(Date.now()+(24*3600*1000))
     body.active_code = md5(body.email+Date.now())
-    let tmpUser = new userModel(body)
-    await tmpUser.register(ctx);
+    await userModel.register(ctx);
 })
 
 
@@ -179,7 +192,8 @@ router.post('/active',async (ctx,next)=>{
 // 获取激活邮件
 router.get('/activecode',async (ctx,next)=>{
     let {code} = ctx.request.query
-    let user = await userModel.findOne({active_code:code})
+    let queryStr = `active_code="${code}"`
+    let user = await userModel.findOne({queryStr})
     
     if (!user){
         ctx.body={
@@ -189,8 +203,9 @@ router.get('/activecode',async (ctx,next)=>{
         return
     }
     let codeNew = md5(user.email+Date.now())
-    await user.set({active_code:codeNew,code_outdate:Date.now()+(24*3600*1000)})
-    await user.save();
+
+    let setStr = `active_code="${condeNew},code_outdate="${parseTime(Date.now()+(24*3600*1000))}"`
+    await userModel.update({setStr,searchStr:queryStr})
     ctx.request.body.email = user.email;
     await userModel.active(ctx);
     ctx.body={
@@ -248,7 +263,8 @@ router.post('/classifyArticle',async (ctx,next)=>{
     // 是否存在分类
     let result;
     let {cataId} = ctx.request.body
-    let res = await cataLogModel.findOne({_id:cataId})
+    let queryStr = `id=${cataId}`
+    let res = await cataLogModel.findOne({queryStr})
     if (!res) {
         ctx.body={
             error:1,
@@ -270,6 +286,12 @@ router.get('/getArticles/:articleId',async (ctx,next)=>{
     ctx.body=result;
 })
 
+// 获取文章内容
+router.get('/getArticleContent/:articleId',async (ctx,next)=>{
+    let result = await articleModel.getArticleContent(ctx);
+    ctx.body=result;
+})
+
 // 验证码
 router.get('/captcha',async (ctx,next)=>{
     let captcha = svgCaptcha.create();
@@ -279,6 +301,56 @@ router.get('/captcha',async (ctx,next)=>{
     ctx.body=captcha.data;
 })
 
+// 图片上传
+router.post('/uploadPic',async (ctx,next)=>{
+    let {files} = ctx.request
+    let path = files['myfile'].path;
+    let name = files['myfile'].name
+    let targetPath = Date.now()+''+parseInt(Math.random().toString()*10000)+'.'+name.split('.').pop()
+    let writer = fs.createWriteStream(`./uploads/${targetPath}`,{flag:'w+'})
+    let reader = fs.createReadStream(path)
+    reader.pipe(writer)
+    ctx.body={
+        error:0,
+        message:'上传成功',
+        data:{path:`${ctx.origin}/${targetPath}`,name}
+    }
+})
+
+
+// 发布文章
+router.get('/publishArticle/:articleId',async (ctx,next)=>{
+    let result = await articleModel.publishArticle(ctx);
+    ctx.body = result;
+})
+
+// 获取已发布的文章
+router.get('/getArticleList',async (ctx,next)=>{
+    let result = await realArticleModel.getArticleList(ctx);
+    ctx.body = result;
+})
+
+// 获取单个文章
+router.get('/getArticle/:articleId',async (ctx,next)=>{
+
+    let result = await realArticleModel.getArticle(ctx)
+    ctx.body = result
+
+})
+
+
+// 获取最热文章
+router.get('/getHotList',async (ctx,next)=>{
+    let result = await realArticleModel.getHotList(ctx)
+    ctx.body = result
+})  
+
+// 获取最新文章
+router.get('/getNewList',async (ctx,next)=>{
+    let result = await realArticleModel.getNewList(ctx)
+    ctx.body = result
+})  
 
 app.use(router.routes())
+app.use(statics)
 app.listen(3000)

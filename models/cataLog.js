@@ -1,29 +1,27 @@
-function cataLog (mongoose){
-    const cataLogSchema = mongoose.Schema({
-        name:String,
-        author:mongoose.Schema.Types.ObjectId,
-        create_at:{type:Date,default:Date.now}
-    })
-    // 是否存在同名
-    cataLogSchema.methods.hasSameName = async function (cataname){
-        
-        let result = await this.model('cataLog').count({name:cataname});
+const baseModel = require('./baseModel')
+class cataLogModel extends baseModel {
+    constructor(pool) {
+        super(pool)
+        this.table="catalog"
+    }
+
+    async hasSameName (cataname){
+        let queryStr = `name="${cataname}"`
+        let result = await this.count({queryStr});
         return result;
     }
 
 
-
-
     // 增加分类
-    cataLogSchema.statics.addCata = async function (ctx) {
+    async addCata (ctx) {
         let {uid,cataname} = ctx.request.body;
         let data = {
             name:cataname,
             author:uid
         }
-        let cata = new this(data)
+
         try {
-            let res  = await cata.hasSameName(cataname);
+            let res  = await this.hasSameName(cataname);
             if (res){
                 
                 return {
@@ -31,11 +29,10 @@ function cataLog (mongoose){
                     message:'文集同名'
                 };
             }
-            let result = await cata.save();
-            let id = result['_id'].toString(),
-                name = result['name'];
-            
-            return {data:{id,name},error:0,message:'文集添加成功'}
+           
+            let result = await this.insert(data);
+            let id = result.insertId            
+            return {data:{id,name:cataname},error:0,message:'文集添加成功'}
         }catch (err) {
             return  {
                 error:1,
@@ -45,42 +42,48 @@ function cataLog (mongoose){
     }
 
     // 删除分类
-    cataLogSchema.statics.deleteCata = async function (ctx) {
+    async deleteCata (ctx) {
         
         let {cataId} = ctx.request.body
-        let result = await this.remove({_id:cataId});
+        let queryStr = `id=${cataId}`
+        let result = await this.delete({queryStr});
         let answer={error:1,message:'删除出错'};
-        if (result.ok==1){
-            result.n==1&&(answer={error:0,message:'删除成功'})
-            result.n==0&&(answer={error:1,message:'删除失败，文集不存在'})
-        }
+        
+        result.affectedRows>=1&&(answer={error:0,message:'删除成功'})
+        result.affectedRows==0&&(answer={error:1,message:'删除失败，文集不存在'})
+        
         return answer;
 
     }
 
-    // 编辑分类
-    cataLogSchema.statics.updateCata = async function (ctx) {
+     // 编辑分类
+     async updateCata (ctx) {
         let {cataId,newName} = ctx.request.body
-        let result = await this.update({_id:cataId},{name:newName})
+        let setStr = `name="${newName}"`
+        let searchStr = `id=${cataId}`
+        let result = await this.update({setStr,searchStr})
         let answer = {error:1,message:'重命名出错'}
-        if (result.ok){
-            result.n==1&&(answer={error:0,message:'重命名成功'})
-            result.n==0&&(answer={error:1,message:'重命名出错,文集不存在'})
-        }
+        
+        result.affectedRows>=1&&(answer={error:0,message:'重命名成功'})
+        result.affectedRows==0&&(answer={error:1,message:'重命名出错,文集不存在'})
+        
         return answer
     }
 
+
     // 输出分类
-    cataLogSchema.statics.getCatas = async function (ctx){
+    async getCatas (ctx){
         let {uid} = ctx.request.body
         let answer = {
             error:1,
             message:'数据库错误,请稍后重试',
         };
         try {
-            let result = await this.find({author:uid}).sort({'create_at':-1});
+            let  queryStr = `author=${uid}`
+            let sortStr = 'create_at desc'
+            let result = await this.find({queryStr,sortStr},1);
             let answerList = result.map((val)=>{
-                return {name:val.name,cataId:val._id}
+                return {name:val.name,cataId:val.id}
             })
             answer = {
                 error:0,
@@ -96,8 +99,9 @@ function cataLog (mongoose){
     }
 
 
-    let cataLogModel = mongoose.model('cataLog',cataLogSchema)
-    return cataLogModel
 
 }
-module.exports = cataLog;
+
+
+
+module.exports = cataLogModel;
